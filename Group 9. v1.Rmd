@@ -1,0 +1,65 @@
+---
+title: "Group9"
+output: html_document
+date: "2026-06-19"
+---
+# data import, data overview, missing value checking
+```{r}
+library(skimr)
+
+summary(A3_Dataset_2023)
+skim(A3_Dataset_2023)
+```
+```{r}
+sort(
+  colSums(is.na(A3_Dataset_2023)),
+  decreasing = TRUE
+)
+```
+
+#check duplication
+```{r}
+sum(duplicated(A3_Dataset_2023))
+```
+# new data set exlude meaningless variables and add 0/1 of alternatives
+```{r}
+insurance_clean <- A3_Dataset_2023 %>%
+  select(
+    -RecommendationId,
+    -RequestId,
+    -LifeId,
+    -ExternalRef
+  )
+
+insurance_clean <- insurance_clean %>%
+  mutate(
+    HasAlternative =
+      ifelse(is.na(Alternative), 0, 1)
+  )
+```
+
+# convert categorical varibales into factors
+```{r}
+insurance_clean <- insurance_clean %>%
+  mutate(
+    Underwriter = factor(Underwriter),
+    Package = factor(Package),
+    Gender = factor(Gender),
+    SmokerStatus = factor(SmokerStatus),
+    HomeState = factor(HomeState),
+    PremiumFrequency = factor(PremiumFrequency),
+    Super = factor(Super),
+    RolloverTaxRebate = factor(RolloverTaxRebate)
+  )
+
+insurance_clean <- insurance_clean %>%
+  mutate(
+    across(
+      c(Life,TPD,Trauma,IP,
+        BE,Severity,
+        SelfEmployed),
+      factor
+    )
+  )
+```
+
