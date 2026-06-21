@@ -23,7 +23,7 @@ ggplot(insurance_clean, aes(x = AgeNext)) +
 
 ggplot(insurance_clean %>% filter(AnnualIncome < 300000),
        aes(x = AnnualIncome)) +
-  geom_histogram(binwidth = 10000, fill = "darkgreen", color = "white") +
+  geom_histogram(binwidth = 10000, fill = "steelblue", color = "white") +
   scale_x_continuous(labels = scales::comma) +
   labs(
     title = "Distribution of Annual Income (Filtered)",
@@ -100,4 +100,26 @@ ggplot(insurance_clean, aes(x = Gender, y = AnnualisedPremium)) +
     y = "Annualised Premium"
   )
 
+#---------------------------------------------------------
+# 7. Recommendations by Product Type
+#---------------------------------------------------------
+product_counts <- insurance_clean %>%
+  summarise(
+    Life = sum(Life == "Yes", na.rm = TRUE),
+    TPD = sum(TPD == "Yes", na.rm = TRUE),
+    Trauma = sum(Trauma == "Yes", na.rm = TRUE),
+    IP = sum(IP == "Yes", na.rm = TRUE)
+  ) %>%
+  tidyr::pivot_longer(
+    cols = everything(),
+    names_to = "Product",
+    values_to = "Count"
+  )
 
+ggplot(product_counts, aes(x = Product, y = Count)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Number of Recommendations by Product Type",
+    x = "Product",
+    y = "Number of Recommendations"
+  )
