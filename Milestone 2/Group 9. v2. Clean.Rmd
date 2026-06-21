@@ -1,8 +1,4 @@
----
-output:
-  html_document: default
-  pdf_document: default
----
+
 
 #Data import, data overview, missing value checking
 ```{r}
@@ -36,7 +32,7 @@ insurance_clean <- A3_Dataset_2023 %>%
 # Replace invalid income values (-1) with NA
 insurance_clean$AnnualIncome[insurance_clean$AnnualIncome < 0] <- NA
 
-# Filter 128 rows with missing value of important customer features (0.07% of database)
+# Remove 128 observations (0.07% of the dataset) with missing values in important customer features
  insurance_clean <- insurance_clean %>%
   drop_na(AnnualIncome, AgeNext, AdviserID, Gender, Occupation, SmokerStatus, HomeState, SelfEmployed)
  
