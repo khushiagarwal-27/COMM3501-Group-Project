@@ -1,0 +1,84 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+#Data import, data overview, missing value checking
+```{r}
+library(readxl)
+
+A3_Dataset_2023 <- read_excel("~/Downloads/2026T2/COMM3501/Assignment/A3 Group/A3_Dataset_2023.xlsx")
+
+library(skimr)
+skim(A3_Dataset_2023)
+```
+
+#Check duplication
+```{r}
+sum(duplicated(A3_Dataset_2023))
+```
+
+#new data set exlude missing value, meaningless variables and add 0/1 of alternatives
+```{r}
+library(tidyverse)
+library(dplyr)
+
+# Remove identifiers (no predictive value)
+insurance_clean <- A3_Dataset_2023 %>%
+  select(
+    -RecommendationId,
+    -RequestId,
+    -LifeId,
+    -ExternalRef
+  )
+
+# Replace invalid income values (-1) with NA
+insurance_clean$AnnualIncome[insurance_clean$AnnualIncome < 0] <- NA
+
+# Filter 128 rows with missing value of important customer features (0.07% of database)
+ insurance_clean <- insurance_clean %>%
+  drop_na(AnnualIncome, AgeNext, AdviserID, Gender, Occupation, SmokerStatus, HomeState, SelfEmployed)
+ 
+# Feature engineering
+insurance_clean <- insurance_clean %>%
+  mutate(
+    HasAlternative =
+      ifelse(is.na(Alternative), 0, 1)
+  )
+```
+
+# Check missing values AFTER cleaning
+```{r}
+sort(
+  colSums(is.na(insurance_clean)),
+  decreasing = TRUE
+)
+```
+
+# convert categorical variables into factors
+```{r}
+insurance_clean <- insurance_clean %>%
+  mutate(
+    Underwriter = factor(Underwriter),
+    Package = factor(Package),
+    Gender = factor(Gender),
+    SmokerStatus = factor(SmokerStatus),
+    HomeState = factor(HomeState),
+    PremiumFrequency = factor(PremiumFrequency),
+    Super = factor(Super),
+    RolloverTaxRebate = factor(RolloverTaxRebate)
+  )
+
+insurance_clean <- insurance_clean %>%
+  mutate(
+    across(
+      c(Life,TPD,Trauma,IP,
+        BE,Severity,
+        SelfEmployed),
+      factor
+    )
+  )
+```
+
+
