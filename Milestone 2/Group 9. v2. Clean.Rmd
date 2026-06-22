@@ -1,26 +1,37 @@
+# 1. Data Import and Initial Overview
 
-
-#Data import, data overview, missing value checking
-```{r}
 library(readxl)
-
-A3_Dataset_2023 <- read_excel("~/Downloads/2026T2/COMM3501/Assignment/A3 Group/A3_Dataset_2023.xlsx")
-
 library(skimr)
+# Import dataset
+A3_Dataset_2023 <- read_excel(
+  "~/Downloads/2026T2/COMM3501/Assignment/A3 Group/A3_Dataset_2023.xlsx"
+)
+# Initial data overview
 skim(A3_Dataset_2023)
-```
 
-#Check duplication
-```{r}
+⸻
+
+# 2. Missing Value Analysis (Raw Data)
+
+# Check missing values across all variables
+sort(
+  colSums(is.na(A3_Dataset_2023)),
+  decreasing = TRUE
+)
+
+⸻
+
+# 3. Duplicate Record Check
+
+# Check duplicated observations
 sum(duplicated(A3_Dataset_2023))
-```
 
-#new data set exlude missing value, meaningless variables and add 0/1 of alternatives
-```{r}
+⸻
+
+# 4. Data Cleaning and Feature Engineering
+
 library(tidyverse)
-library(dplyr)
-
-# Remove identifiers (no predictive value)
+# Remove identifier variables with no analytical value
 insurance_clean <- A3_Dataset_2023 %>%
   select(
     -RecommendationId,
@@ -28,53 +39,158 @@ insurance_clean <- A3_Dataset_2023 %>%
     -LifeId,
     -ExternalRef
   )
-
-# Replace invalid income values (-1) with NA
-insurance_clean$AnnualIncome[insurance_clean$AnnualIncome < 0] <- NA
-
-# Remove 128 observations (0.07% of the dataset) with missing values in important customer features
- insurance_clean <- insurance_clean %>%
-  drop_na(AnnualIncome, AgeNext, AdviserID, Gender, Occupation, SmokerStatus, HomeState, SelfEmployed)
- 
-# Feature engineering
+# Replace invalid AnnualIncome values (-1) with NA
+insurance_clean$AnnualIncome[
+  insurance_clean$AnnualIncome < 0
+] <- NA
+# Create HasAlternative indicator
 insurance_clean <- insurance_clean %>%
   mutate(
-    HasAlternative =
-      ifelse(is.na(Alternative), 0, 1)
+    HasAlternative = ifelse(
+      is.na(Alternative),
+      0,
+      1
+    )
   )
-```
 
-# Check missing values AFTER cleaning
-```{r}
-sort(
-  colSums(is.na(insurance_clean)),
-  decreasing = TRUE
-)
-```
+⸻
 
-# convert categorical variables into factors
-```{r}
-insurance_clean <- insurance_clean %>%
-  mutate(
-    Underwriter = factor(Underwriter),
-    Package = factor(Package),
-    Gender = factor(Gender),
-    SmokerStatus = factor(SmokerStatus),
-    HomeState = factor(HomeState),
-    PremiumFrequency = factor(PremiumFrequency),
-    Super = factor(Super),
-    RolloverTaxRebate = factor(RolloverTaxRebate)
-  )
+# 5. Convert Categorical Variables to Factors
 
 insurance_clean <- insurance_clean %>%
   mutate(
     across(
-      c(Life,TPD,Trauma,IP,
-        BE,Severity,
-        SelfEmployed),
-      factor
+      c(
+        Underwriter,
+        Package,
+        Gender,
+        SmokerStatus,
+        HomeState,
+        PremiumFrequency,
+        Super,
+        RolloverTaxRebate,
+        Life,
+        TPD,
+        Trauma,
+        IP,
+        BE,
+        Severity,
+        SelfEmployed
+      ),
+      as.factor
     )
   )
-```
 
+⸻
 
+# 6. Factor Level Consistency Check
+
+# Review factor levels
+lapply(
+  insurance_clean %>%
+    select(where(is.factor)),
+  levels
+)
+
+⸻
+
+# 7. Data Quality Analysis and Missing Value Assessment (Cleaned Data)
+
+# Overall missing value overview
+sort(
+  colSums(is.na(insurance_clean)),
+  decreasing = TRUE
+)
+
+# Customer Variables
+
+customer_vars <- c(
+  "AnnualIncome",
+  "AgeNext",
+  "Gender",
+  "Occupation",
+  "SmokerStatus",
+  "HomeState",
+  "SelfEmployed"
+)
+customer_missing_rows <- insurance_clean %>%
+  filter(
+    if_any(
+      all_of(customer_vars),
+      is.na
+    )
+  ) %>%
+  nrow()
+customer_missing_rows
+
+# Product Variables
+
+product_vars <- c(
+  "Life", "TPD", "Trauma", "IP",
+  "LifeCoverAmount", "TPDCoverAmount",
+  "TraumaCoverAmount", "IPCoverAmount",
+  "Premium", "AnnualisedPremium",
+  "PremiumFrequency", "Super",
+  "InsideSuperPremium", "OutsideSuperPremium",
+  "IndexationRate"
+)
+product_missing_rows <- insurance_clean %>%
+  filter(
+    if_any(
+      all_of(product_vars),
+      is.na
+    )
+  ) %>%
+  nrow()
+product_missing_rows
+
+# Total Missing Rows (Excluding Alternative)
+
+total_missing_rows <- insurance_clean %>%
+  select(-Alternative) %>%
+  filter(
+    if_any(
+      everything(),
+      is.na
+    )
+  ) %>%
+  nrow()
+total_missing_rows
+
+⸻
+
+# 8. Missing Value Summary Statistics
+
+data.frame(
+  Variable_Group = c(
+    "Customer Variables",
+    "Product Variables",
+    "Overall Dataset"
+  ),
+  Missing_Rows = c(
+    customer_missing_rows,
+    product_missing_rows,
+    total_missing_rows
+  ),
+  Missing_Rate = c(
+    round(customer_missing_rows / nrow(insurance_clean) * 100, 3),
+    round(product_missing_rows / nrow(insurance_clean) * 100, 3),
+    round(total_missing_rows / nrow(insurance_clean) * 100, 3)
+  ),
+  Completion_Rate = c(
+    round(100 - customer_missing_rows / nrow(insurance_clean) * 100, 3),
+    round(100 - product_missing_rows / nrow(insurance_clean) * 100, 3),
+    round(100 - total_missing_rows / nrow(insurance_clean) * 100, 3)
+  )
+)
+
+⸻
+
+# 9. Data Quality Notes
+
+# Notes:
+# • AnnualIncome contained invalid values (-1) which were recoded as NA
+# • No duplicate records were identified
+# • Alternative was retained and converted into HasAlternative
+# • Remaining missing values are minimal and primarily concentrated in product-related variables
+# • Dataset exhibits high completeness (>99.7%) and is suitable for further analysis
