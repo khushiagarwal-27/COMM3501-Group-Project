@@ -1,0 +1,369 @@
+# 1. Data Import and Initial Overview
+
+library(readxl)
+library(skimr)
+# Import dataset
+A3_Dataset_2023 <- read_excel(
+  "~/Downloads/2026T2/COMM3501/Assignment/A3 Group/A3_Dataset_2023.xlsx"
+)
+# Initial data overview
+skim(A3_Dataset_2023)
+
+
+# 2. Missing Value Analysis (Raw Data)
+
+# Check missing values across all variables
+sort(
+  colSums(is.na(A3_Dataset_2023)),
+  decreasing = TRUE
+)
+
+
+# 3. Duplicate Record Check
+
+# Check duplicated observations
+sum(duplicated(A3_Dataset_2023))
+
+
+# 4. Data Cleaning and Feature Engineering
+
+insurance_clean <- A3_Dataset_2023 %>%
+  select(
+    -RecommendationId,
+    -RequestId,
+    -LifeId,
+    -ExternalRef,
+    -AdviserID
+  )
+
+# Replace invalid AnnualIncome values (-1) with NA
+insurance_clean$AnnualIncome[
+  insurance_clean$AnnualIncome < 0
+] <- NA
+
+# Create HasAlternative indicator, then remove original Alternative variable
+insurance_clean <- insurance_clean %>%
+  mutate(
+    HasAlternative = ifelse(is.na(Alternative), 0, 1)
+  ) %>%
+  select(-Alternative)
+
+
+# 5. Convert Categorical Variables to Factors
+
+insurance_clean <- insurance_clean %>%
+  mutate(
+    across(
+      c(
+        Underwriter,
+        Package,
+        Gender,
+        SmokerStatus,
+        HomeState,
+        PremiumFrequency,
+        Super,
+        RolloverTaxRebate,
+        Life,
+        TPD,
+        Trauma,
+        IP,
+        BE,
+        Severity,
+        SelfEmployed,
+        HasAlternative
+      ),
+      as.factor
+    )
+  )
+
+
+
+# 6. Factor Level Consistency Check
+
+# Review factor levels
+lapply(
+  insurance_clean %>%
+    select(where(is.factor)),
+  levels
+)
+
+# 7. Data Quality Analysis and Missing Value Assessment (Cleaned Data)
+
+# Overall missing value overview
+sort(
+  colSums(is.na(insurance_clean)),
+  decreasing = TRUE
+)
+
+# Create missingness indicators for variables with missing values
+missing_pattern_data <- insurance_clean %>%
+  mutate(
+    NEOS_Flag = factor(
+      if_else(Underwriter == "NEOS Life", "NEOS", "Other"),
+      levels = c("Other", "NEOS")
+    ),
+    Missing_AnnualIncome = ifelse(is.na(AnnualIncome), 1, 0),
+    Missing_Gender = ifelse(is.na(Gender), 1, 0),
+    Missing_ProductInfo = ifelse(
+      is.na(Life) | is.na(TPD) | is.na(Trauma) | is.na(IP) |
+        is.na(Premium) | is.na(AnnualisedPremium),
+      1,
+      0
+    )
+  )
+
+# Check whether missing customer information differs by underwriter
+# missing income is significantly associated with Underwriter
+table(missing_pattern_data$Missing_AnnualIncome, missing_pattern_data$Underwriter)
+chisq.test(table(missing_pattern_data$Missing_AnnualIncome, missing_pattern_data$Underwriter))
+
+# Check whether missing product information differs by underwriter
+# no evidence that missing product information differs by underwriter
+table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$Underwriter)
+chisq.test(table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$Underwriter))
+
+# Check whether missingness differs by NEOS vs Other
+# missing product information is not significantly associated with whether the recommendation is NEOS or not
+table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$NEOS_Flag)
+chisq.test(table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$NEOS_Flag))
+
+
+# Whether missingness in the other customer profile variables has a pattern by insurer or by NEOS vs non-NEOS recommendation.
+
+customer_missing_test_data <- insurance_clean %>%
+  mutate(
+    NEOS_Flag = factor(
+      if_else(Underwriter == "NEOS Life", "NEOS", "Other"),
+      levels = c("Other", "NEOS")
+    ),
+    Missing_OtherCustomerInfo = ifelse(
+      is.na(AgeNext) |
+        is.na(Gender) |
+        is.na(Occupation) |
+        is.na(SmokerStatus) |
+        is.na(HomeState) |
+        is.na(SelfEmployed),
+      1,
+      0
+    )
+  )
+
+# test against Underwriter
+table(
+  customer_missing_test_data$Missing_OtherCustomerInfo,
+  customer_missing_test_data$Underwriter
+)
+chisq.test(
+  table(
+    customer_missing_test_data$Missing_OtherCustomerInfo,
+    customer_missing_test_data$Underwriter
+  )
+)
+
+# test against NEOS_Flag
+table(
+  customer_missing_test_data$Missing_OtherCustomerInfo,
+  customer_missing_test_data$NEOS_Flag
+)
+
+chisq.test(
+  table(
+    customer_missing_test_data$Missing_OtherCustomerInfo,
+    customer_missing_test_data$NEOS_Flag
+  )
+)
+
+# 9. Data Quality Notes
+
+# Notes:
+# • AnnualIncome contained invalid values (-1) which were recoded as NA
+# • No duplicate records were identified
+# • Alternative was removed because missing values in this field indicate no alternative recommendation
+# • Some missing values is not random, can not remove it directly, it will be impute after split data
+
+
+# 10. Commission Structure Organisation
+
+# Based on Australian life insurance 2020 legislation change
+
+# Create 3 new columns:
+# 1. CommissionType
+# 2. InitialCommissionRate_GST
+# 3. RenewalCommissionRate_GST
+
+commission_text <- insurance_clean$CommissionStructure %>%
+  as.character() %>%
+  str_squish() %>%
+  str_to_lower() %>%
+  replace_na("unknown")
+
+# Extract C-rate, e.g. C100, C70, C85
+c_rate <- suppressWarnings(
+  as.numeric(str_match(commission_text, "c(\\d+(?:\\.\\d+)?)")[, 2])
+)
+
+# Extract direct pair, e.g. 66/22, 27.5/27.5, 40.7 / 16.5
+pair_rate <- str_match(
+  commission_text,
+  "(\\d+(?:\\.\\d+)?)\\s*%?\\s*/\\s*(\\d+(?:\\.\\d+)?)\\s*%?"
+)
+
+pair_initial <- suppressWarnings(as.numeric(pair_rate[, 2]))
+pair_renewal <- suppressWarnings(as.numeric(pair_rate[, 3]))
+
+# Extract modifier pair, e.g. 100% Init / 100% Renew
+init_modifier <- suppressWarnings(
+  as.numeric(
+    coalesce(
+      str_match(commission_text, "(\\d+(?:\\.\\d+)?)\\s*%?\\s*(init|initial|year1|yr1)")[, 2],
+      str_match(commission_text, "(init|initial|year1|yr1)\\s*(\\d+(?:\\.\\d+)?)\\s*%?")[, 3]
+    )
+  )
+)
+
+renew_modifier <- suppressWarnings(
+  as.numeric(
+    coalesce(
+      str_match(commission_text, "(\\d+(?:\\.\\d+)?)\\s*%?\\s*(renew|renewal|year2|yr2)")[, 2],
+      str_match(commission_text, "(renew|renewal|year2|yr2)\\s*(\\d+(?:\\.\\d+)?)\\s*%?")[, 3]
+    )
+  )
+)
+
+commission_type <- case_when(
+  commission_text == "unknown" ~ "Unknown",
+  str_detect(commission_text, "nil|nill|no commission|nil commission") ~ "No commission",
+  str_detect(commission_text, "level|l2evel|0% level") ~ "Level",
+  str_detect(commission_text, "upfront|higher initial|standard - upfront|initial \\(") ~ "Upfront / Higher initial",
+  str_detect(commission_text, "hybrid|h4ybrid|h3ybrid|h2ybrid|hybrid60|hybrid70|hybrid80") ~ "Hybrid",
+  TRUE ~ "Other specified"
+)
+
+# Base commission rates including GST
+# 2020 LIF cap: 60% initial + GST = 66%; 20% renewal + GST = 22%
+# Level commission is treated as 33% including GST.
+base_initial <- case_when(
+  commission_type == "Unknown" ~ NA_real_,
+  commission_type == "No commission" ~ 0,
+  commission_type == "Level" ~ 33,
+  str_detect(commission_text, "2018|hybrid80|88\\s*/\\s*22") ~ 88,
+  str_detect(commission_text, "2019|hybrid70|77\\s*/\\s*22") ~ 77,
+  commission_type %in% c("Hybrid", "Upfront / Higher initial") ~ 66,
+  TRUE ~ NA_real_
+)
+
+base_renewal <- case_when(
+  commission_type == "Unknown" ~ NA_real_,
+  commission_type == "No commission" ~ 0,
+  commission_type == "Level" ~ 33,
+  commission_type %in% c("Hybrid", "Upfront / Higher initial") ~ 22,
+  TRUE ~ NA_real_
+)
+
+# Decide whether pair values are actual rates or modifiers.
+# Example: 66/22 is actual.
+# Example: 100 Init / 100 Renew is a modifier of the base rate.
+has_modifier_words <- str_detect(
+  commission_text,
+  "init|initial|renew|renewal|year1|year2"
+)
+
+use_pair_as_modifier <- has_modifier_words &
+  !str_detect(commission_text, "yr1\\s*66|year1\\s*66|yr2\\s*22|year2\\s*22") &
+  !is.na(pair_initial) &
+  !is.na(pair_renewal) &
+  pair_initial <= 100 &
+  pair_renewal <= 100
+
+initial_rate <- case_when(
+  commission_type == "Unknown" ~ NA_real_,
+  commission_type == "No commission" ~ 0,
+
+  # C100, C70, C85 etc.
+  !is.na(c_rate) ~ base_initial * c_rate / 100,
+
+  # 100% Init / 100% Renew style
+  !is.na(init_modifier) ~ base_initial * init_modifier / 100,
+
+  # Pair used as modifier
+  use_pair_as_modifier ~ base_initial * pair_initial / 100,
+
+  # Direct actual pair, e.g. 66/22, 27.5/27.5, 40.7/16.5
+  !is.na(pair_initial) ~ pair_initial,
+
+  # Generic standard type with no stated rate
+  commission_type %in% c("Hybrid", "Upfront / Higher initial", "Level") ~ base_initial,
+
+  TRUE ~ NA_real_
+)
+
+renewal_rate <- case_when(
+  commission_type == "Unknown" ~ NA_real_,
+  commission_type == "No commission" ~ 0,
+
+  # C100, C70, C85 etc.
+  !is.na(c_rate) ~ base_renewal * c_rate / 100,
+
+  # 100% Init / 100% Renew style
+  !is.na(renew_modifier) ~ base_renewal * renew_modifier / 100,
+
+  # Pair used as modifier
+  use_pair_as_modifier ~ base_renewal * pair_renewal / 100,
+
+  # Direct actual pair, e.g. 66/22, 27.5/27.5, 40.7/16.5
+  !is.na(pair_renewal) ~ pair_renewal,
+
+  # Generic standard type with no stated rate
+  commission_type %in% c("Hybrid", "Upfront / Higher initial", "Level") ~ base_renewal,
+
+  TRUE ~ NA_real_
+)
+
+insurance_clean <- insurance_clean %>%
+  mutate(
+    CommissionType = factor(commission_type),
+    InitialCommissionRate_GST = case_when(
+      commission_text == "unknown" ~ "Unknown",
+      is.na(initial_rate) ~ "Not stated in label",
+      TRUE ~ paste0(round(initial_rate, 2), "%")
+    ),
+    RenewalCommissionRate_GST = case_when(
+      commission_text == "unknown" ~ "Unknown",
+      is.na(renewal_rate) ~ "Not stated in label",
+      TRUE ~ paste0(round(renewal_rate, 2), "%")
+    ),
+    InitialCommissionRate_GST = factor(InitialCommissionRate_GST),
+    RenewalCommissionRate_GST = factor(RenewalCommissionRate_GST)
+  )
+
+# Accuracy checks
+commission_check <- insurance_clean %>%
+  count(
+    CommissionStructure,
+    CommissionType,
+    InitialCommissionRate_GST,
+    RenewalCommissionRate_GST,
+    sort = TRUE
+  )
+
+commission_check
+
+colSums(
+  is.na(
+    insurance_clean %>%
+      select(
+        CommissionType,
+        InitialCommissionRate_GST,
+        RenewalCommissionRate_GST
+      )
+  )
+)
+
+
+
+# 11. TRAIN / TEST SPLIT and MISSING VALUE IMPUTATION
+
+library(tidymodels)
+
+set.seed(123)
+
