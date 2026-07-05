@@ -365,5 +365,97 @@ colSums(
 
 library(tidymodels)
 
-set.seed(123)
+set.seed(3501)
 
+# Create a separate modelling dataset.
+# NEOS_Flag is created only for classification modelling.
+model_data <- insurance_clean %>%
+  mutate(
+    NEOS_Flag = factor(
+      if_else(Underwriter == "NEOS Life", "NEOS", "Other"),
+      levels = c("Other", "NEOS")
+    )
+  ) %>%
+  select(
+    NEOS_Flag,
+    everything(),
+    -Underwriter
+  )
+
+# Choose variables for this model.
+# Date, Time and raw CommissionStructure are removed here because they are not
+# suitable for KNN / Naive Bayes directly. The organised commission columns stay.
+model_data <- model_data %>%
+  select(
+    -Date,
+    -Time,
+    -CommissionStructure
+  )
+
+# Split before imputation to avoid data leakage.
+data_split <- initial_split(
+  model_data,
+  prop = 0.80,
+  strata = NEOS_Flag
+)
+
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# AnnualIncome showed patterned missingness, so as the other customer indicators, so add a missingness indicator before median imputation. 
+
+# Missing indicators for customer variables
+
+library(recipes)
+
+customer_vars <- c(
+  "AnnualIncome",
+  "AgeNext",
+  "Gender",
+  "Occupation",
+  "SmokerStatus",
+  "HomeState",
+  "SelfEmployed"
+)
+
+imputation_recipe <- recipe(NEOS_Flag ~ ., data = train_data) %>%
+  step_indicate_na(all_of(customer_vars)) %>%
+  step_string2factor(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+imputation_prep <- prep(
+  imputation_recipe,
+  training = train_data
+)
+
+train_data <- bake(
+  imputation_prep,
+  new_data = train_data
+)
+
+test_data <- bake(
+  imputation_prep,
+  new_data = test_data
+)
+
+# Check train/test size and class balance.
+sum(is.na(train_data))
+sum(is.na(test_data))
+
+colSums(is.na(train_data))
+colSums(is.na(test_data))
+
+train_data %>%
+  count(NEOS_Flag) %>%
+  mutate(
+    Percentage = round(n / sum(n) * 100, 2)
+  )
+
+test_data %>%
+  count(NEOS_Flag) %>%
+  mutate(
+    Percentage = round(n / sum(n) * 100, 2)
+  )
