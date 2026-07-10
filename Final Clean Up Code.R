@@ -216,3 +216,60 @@ missing_table <- data_clean %>%
   )
 
 missing_table
+
+model_data <- data_clean %>%
+  drop_na(
+    annual_income,
+    commission_structure,
+    adviser_id
+  )
+
+model_data <- model_data %>%
+  mutate(
+    log_annual_income = log1p(annual_income),
+    premium_to_income = annualised_premium / annual_income
+  )
+
+# =========================
+# 1. Load packages
+# =========================
+
+library(tidyverse)
+library(caret)
+library(pROC)
+library(rpart)
+library(rpart.plot)
+library(ranger)
+library(xgboost)
+
+set.seed(123)
+
+# =========================
+# 2. Create final modelling data
+# =========================
+
+model_data_final <- model_data %>%
+  select(
+    neos_flag,
+    age_next, age_band, gender, smoker_status, home_state,
+    occupation_group, self_employed,
+    log_annual_income,
+    super, rollover_tax_rebate,
+    life_bin, tpd_bin, trauma_bin, ip_bin,
+    product_count, product_bundle,
+    log_premium, log_annualised_premium,
+    log_total_cover,
+    premium_frequency,
+    commission_type, upfront_commission, renewal_commission,
+    has_alternative,
+    adviser_group,
+    month, quarter, weekday
+  ) %>%
+  drop_na() %>%
+  mutate(
+    neos_flag = factor(neos_flag, levels = c("No", "Yes"))
+  )
+
+# Check class balance
+table(model_data_final$neos_flag)
+prop.table(table(model_data_final$neos_flag))
