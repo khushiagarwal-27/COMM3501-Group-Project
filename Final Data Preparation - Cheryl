@@ -384,8 +384,7 @@ model_data_final <- model_data %>%
     
     # Other useful predictors
     has_alternative,
-    adviser_group,
-    month, weekday
+    adviser_group
   ) %>%
   drop_na() %>%
   mutate(neos_flag = factor(neos_flag, levels = c("Yes", "No")))
