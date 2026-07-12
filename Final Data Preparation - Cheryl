@@ -1,197 +1,162 @@
-# 1. Data Import and Initial Overview
+---
+title: "Final Clean Up Code"
+author: "COMM3501"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# ============================================================
+# 0. Setup
+# ============================================================
+
+# If any package is missing, install it once in the Console, for example:
+# install.packages(c("readxl", "tidyverse", "janitor", "lubridate",
+#                    "caret", "pROC", "e1071", "knitr"))
 
 library(readxl)
-library(skimr)
-# Import dataset
-A3_Dataset_2023 <- read_excel(
-  "~/Downloads/2026T2/COMM3501/Assignment/A3 Group/A3_Dataset_2023.xlsx"
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(stringr)
+library(forcats)
+library(caret)
+library(pROC)
+library(e1071)
+library(knitr)
+
+set.seed(123)
+
+# Mac-safe absolute path. Change this if your file moves.
+input_file <- "/Users/ch12yl/Downloads/2026T2/COMM3501/Assignment/A3 Group/A3_Dataset_2023.xlsx"
+
+# Outputs will be saved beside this Rmd after knitting.
+output_dir <- "model_outputs"
+dir.create(output_dir, showWarnings = FALSE)
+```
+
+# Data Check
+
+```{r data-check}
+file.exists(input_file)
+
+data_raw <- read_excel(input_file)
+
+data_check <- tibble(
+  Check = c(
+    "Excel file exists",
+    "Excel file opens in R on Mac",
+    "Raw rows",
+    "Raw columns"
+  ),
+  Result = c(
+    ifelse(file.exists(input_file), "Pass", "Fail"),
+    "Pass",
+    nrow(data_raw),
+    ncol(data_raw)
+  )
 )
-# Initial data overview
-skim(A3_Dataset_2023)
 
+kable(data_check)
+```
 
-# 2. Missing Value Analysis (Raw Data)
+# Clean Data
 
-# Check missing values across all variables
-sort(
-  colSums(is.na(A3_Dataset_2023)),
-  decreasing = TRUE
-)
+This section follows your clean-up logic and prepares `model_data_final` for modelling.
 
-
-# 3. Duplicate Record Check
-
-# Check duplicated observations
-sum(duplicated(A3_Dataset_2023))
-
-
-# 4. Data Cleaning and Feature Engineering
-
-insurance_clean <- A3_Dataset_2023 %>%
-  select(
-    -RecommendationId,
-    -RequestId,
-    -LifeId,
-    -ExternalRef,
-    -AdviserID
+```{r clean-data, message=FALSE, warning=FALSE}
+# 1. Clean column names and text
+data <- data_raw %>%
+  clean_names() %>%
+  mutate(
+    across(where(is.character), ~ str_squish(.)),
+    across(where(is.character), ~ na_if(., "")),
+    across(where(is.character), ~ na_if(., "[Blank]"))
   )
 
-# Replace invalid AnnualIncome values (-1) with NA
-insurance_clean$AnnualIncome[
-  insurance_clean$AnnualIncome < 0
-] <- NA
-
-# Create HasAlternative indicator, then remove original Alternative variable
-insurance_clean <- insurance_clean %>%
+# 2. Remove unnecessary ID/reference columns
+data_clean <- data %>%
+  dplyr::select(
+    -recommendation_id,
+    -request_id,
+    -life_id,
+    -external_ref
+  )
+# 3. Create target variable
+# Positive class is "Yes", meaning the underwriter is NEOS Life.
+data_clean <- data_clean %>%
   mutate(
-    HasAlternative = ifelse(is.na(Alternative), 0, 1)
-  ) %>%
-  select(-Alternative)
+    neos_flag = ifelse(underwriter == "NEOS Life", "Yes", "No"),
+    neos_flag = factor(neos_flag, levels = c("Yes", "No"))
+  )
 
-
-# 5. Convert Categorical Variables to Factors
-
-insurance_clean <- insurance_clean %>%
+# 4. Convert product Yes/No variables to binary
+data_clean <- data_clean %>%
   mutate(
-    across(
-      c(
-        Underwriter,
-        Package,
-        Gender,
-        SmokerStatus,
-        HomeState,
-        PremiumFrequency,
-        Super,
-        RolloverTaxRebate,
-        Life,
-        TPD,
-        Trauma,
-        IP,
-        BE,
-        Severity,
-        SelfEmployed,
-        HasAlternative
-      ),
-      as.factor
+    life_bin = case_when(life == "Yes" ~ 1, life == "No" ~ 0, TRUE ~ NA_real_),
+    tpd_bin = case_when(tpd == "Yes" ~ 1, tpd == "No" ~ 0, TRUE ~ NA_real_),
+    trauma_bin = case_when(trauma == "Yes" ~ 1, trauma == "No" ~ 0, TRUE ~ NA_real_),
+    ip_bin = case_when(ip == "Yes" ~ 1, ip == "No" ~ 0, TRUE ~ NA_real_),
+    be_bin = case_when(be == "Yes" ~ 1, be == "No" ~ 0, TRUE ~ NA_real_),
+    severity_bin = case_when(severity == "Yes" ~ 1, severity == "No" ~ 0, TRUE ~ NA_real_)
+  )
+
+# 5. Keep records with at least one core product
+data_clean <- data_clean %>%
+  mutate(
+    product_count = life_bin + tpd_bin + trauma_bin + ip_bin
+  ) 
+
+# 6. Clean numeric values
+data_clean <- data_clean %>%
+  mutate(
+    annual_income = ifelse(annual_income < 0, NA_real_, annual_income),
+    premium = ifelse(premium < 0, NA, premium),
+    annualised_premium = ifelse(annualised_premium < 0, NA, annualised_premium),
+    inside_super_premium = ifelse(inside_super_premium < 0, NA, inside_super_premium),
+    outside_super_premium = ifelse(outside_super_premium < 0, NA, outside_super_premium)
+  )
+
+# 7. Create engineered variables
+data_clean <- data_clean %>%
+  mutate(
+    has_alternative = ifelse(is.na(alternative), 0, 1),
+    total_cover = life_cover_amount + tpd_cover_amount +
+      trauma_cover_amount + ip_cover_amount,
+    log_annual_income = log1p(annual_income),
+    log_premium = log1p(premium),
+    log_annualised_premium = log1p(annualised_premium),
+    log_total_cover = log1p(total_cover)
+  )
+
+# 8. Product bundle
+data_clean <- data_clean %>%
+  mutate(
+    product_bundle = case_when(
+      life_bin == 1 & tpd_bin == 0 & trauma_bin == 0 & ip_bin == 0 ~ "Life only",
+      life_bin == 0 & tpd_bin == 1 & trauma_bin == 0 & ip_bin == 0 ~ "TPD only",
+      life_bin == 0 & tpd_bin == 0 & trauma_bin == 1 & ip_bin == 0 ~ "Trauma only",
+      life_bin == 0 & tpd_bin == 0 & trauma_bin == 0 & ip_bin == 1 ~ "IP only",
+      life_bin == 1 & tpd_bin == 1 & trauma_bin == 0 & ip_bin == 0 ~ "Life + TPD",
+      life_bin == 1 & tpd_bin == 1 & trauma_bin == 1 & ip_bin == 0 ~ "Life + TPD + Trauma",
+      life_bin == 1 & tpd_bin == 1 & trauma_bin == 1 & ip_bin == 1 ~ "Life + TPD + Trauma + IP",
+      product_count >= 2 ~ "Other bundle",
+      TRUE ~ "Other"
     )
   )
 
+# 9. Commission structure organisation
+# Based on Australian life insurance 2020 legislation change.
+# Creates 3 new columns:
+# 1. commission_type
+# 2. initial_commission_rate_gst
+# 3. renewal_commission_rate_gst
 
-
-# 6. Factor Level Consistency Check
-
-# Review factor levels
-lapply(
-  insurance_clean %>%
-    select(where(is.factor)),
-  levels
-)
-
-# 7. Data Quality Analysis and Missing Value Assessment (Cleaned Data)
-
-# Overall missing value overview
-sort(
-  colSums(is.na(insurance_clean)),
-  decreasing = TRUE
-)
-
-# Create missingness indicators for variables with missing values
-missing_pattern_data <- insurance_clean %>%
-  mutate(
-    NEOS_Flag = factor(
-      if_else(Underwriter == "NEOS Life", "NEOS", "Other"),
-      levels = c("Other", "NEOS")
-    ),
-    Missing_AnnualIncome = ifelse(is.na(AnnualIncome), 1, 0),
-    Missing_Gender = ifelse(is.na(Gender), 1, 0),
-    Missing_ProductInfo = ifelse(
-      is.na(Life) | is.na(TPD) | is.na(Trauma) | is.na(IP) |
-        is.na(Premium) | is.na(AnnualisedPremium),
-      1,
-      0
-    )
-  )
-
-# Check whether missing customer information differs by underwriter
-# missing income is significantly associated with Underwriter
-table(missing_pattern_data$Missing_AnnualIncome, missing_pattern_data$Underwriter)
-chisq.test(table(missing_pattern_data$Missing_AnnualIncome, missing_pattern_data$Underwriter))
-
-# Check whether missing product information differs by underwriter
-# no evidence that missing product information differs by underwriter
-table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$Underwriter)
-chisq.test(table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$Underwriter))
-
-# Check whether missingness differs by NEOS vs Other
-# missing product information is not significantly associated with whether the recommendation is NEOS or not
-table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$NEOS_Flag)
-chisq.test(table(missing_pattern_data$Missing_ProductInfo, missing_pattern_data$NEOS_Flag))
-
-
-# Whether missingness in the other customer profile variables has a pattern by insurer or by NEOS vs non-NEOS recommendation.
-
-customer_missing_test_data <- insurance_clean %>%
-  mutate(
-    NEOS_Flag = factor(
-      if_else(Underwriter == "NEOS Life", "NEOS", "Other"),
-      levels = c("Other", "NEOS")
-    ),
-    Missing_OtherCustomerInfo = ifelse(
-      is.na(AgeNext) |
-        is.na(Gender) |
-        is.na(Occupation) |
-        is.na(SmokerStatus) |
-        is.na(HomeState) |
-        is.na(SelfEmployed),
-      1,
-      0
-    )
-  )
-
-# test against Underwriter
-table(
-  customer_missing_test_data$Missing_OtherCustomerInfo,
-  customer_missing_test_data$Underwriter
-)
-chisq.test(
-  table(
-    customer_missing_test_data$Missing_OtherCustomerInfo,
-    customer_missing_test_data$Underwriter
-  )
-)
-
-# test against NEOS_Flag
-table(
-  customer_missing_test_data$Missing_OtherCustomerInfo,
-  customer_missing_test_data$NEOS_Flag
-)
-
-chisq.test(
-  table(
-    customer_missing_test_data$Missing_OtherCustomerInfo,
-    customer_missing_test_data$NEOS_Flag
-  )
-)
-
-# 9. Data Quality Notes
-
-# Notes:
-# • AnnualIncome contained invalid values (-1) which were recoded as NA
-# • No duplicate records were identified
-# • Alternative was removed because missing values in this field indicate no alternative recommendation
-# • Some missing values is not random, can not remove it directly, it will be impute after split data
-
-
-# 10. Commission Structure Organisation
-
-# Based on Australian life insurance 2020 legislation change
-
-# Create 3 new columns:
-# 1. CommissionType
-# 2. InitialCommissionRate_GST
-# 3. RenewalCommissionRate_GST
-
-commission_text <- insurance_clean$CommissionStructure %>%
+commission_text <- data_clean$commission_structure %>%
   as.character() %>%
   str_squish() %>%
   str_to_lower() %>%
@@ -278,184 +243,157 @@ use_pair_as_modifier <- has_modifier_words &
 initial_rate <- case_when(
   commission_type == "Unknown" ~ NA_real_,
   commission_type == "No commission" ~ 0,
-
-  # C100, C70, C85 etc.
   !is.na(c_rate) ~ base_initial * c_rate / 100,
-
-  # 100% Init / 100% Renew style
   !is.na(init_modifier) ~ base_initial * init_modifier / 100,
-
-  # Pair used as modifier
   use_pair_as_modifier ~ base_initial * pair_initial / 100,
-
-  # Direct actual pair, e.g. 66/22, 27.5/27.5, 40.7/16.5
   !is.na(pair_initial) ~ pair_initial,
-
-  # Generic standard type with no stated rate
   commission_type %in% c("Hybrid", "Upfront / Higher initial", "Level") ~ base_initial,
-
   TRUE ~ NA_real_
 )
 
 renewal_rate <- case_when(
   commission_type == "Unknown" ~ NA_real_,
   commission_type == "No commission" ~ 0,
-
-  # C100, C70, C85 etc.
   !is.na(c_rate) ~ base_renewal * c_rate / 100,
-
-  # 100% Init / 100% Renew style
   !is.na(renew_modifier) ~ base_renewal * renew_modifier / 100,
-
-  # Pair used as modifier
   use_pair_as_modifier ~ base_renewal * pair_renewal / 100,
-
-  # Direct actual pair, e.g. 66/22, 27.5/27.5, 40.7/16.5
   !is.na(pair_renewal) ~ pair_renewal,
-
-  # Generic standard type with no stated rate
   commission_type %in% c("Hybrid", "Upfront / Higher initial", "Level") ~ base_renewal,
-
   TRUE ~ NA_real_
 )
 
-insurance_clean <- insurance_clean %>%
+data_clean <- data_clean %>%
   mutate(
-    CommissionType = factor(commission_type),
-    InitialCommissionRate_GST = case_when(
+    commission_type = factor(commission_type),
+    initial_commission_rate_gst = case_when(
       commission_text == "unknown" ~ "Unknown",
       is.na(initial_rate) ~ "Not stated in label",
       TRUE ~ paste0(round(initial_rate, 2), "%")
     ),
-    RenewalCommissionRate_GST = case_when(
+    renewal_commission_rate_gst = case_when(
       commission_text == "unknown" ~ "Unknown",
       is.na(renewal_rate) ~ "Not stated in label",
       TRUE ~ paste0(round(renewal_rate, 2), "%")
     ),
-    InitialCommissionRate_GST = factor(InitialCommissionRate_GST),
-    RenewalCommissionRate_GST = factor(RenewalCommissionRate_GST)
+    initial_commission_rate_gst = factor(initial_commission_rate_gst),
+    renewal_commission_rate_gst = factor(renewal_commission_rate_gst)
   )
 
-# Accuracy checks
-commission_check <- insurance_clean %>%
-  count(
-    CommissionStructure,
-    CommissionType,
-    InitialCommissionRate_GST,
-    RenewalCommissionRate_GST,
-    sort = TRUE
-  )
+# 10. Date variables
+fix_excel_date <- function(x) {
+  if (inherits(x, "Date")) return(x)
+  if (inherits(x, "POSIXct")) return(as.Date(x))
+  as.Date(as.numeric(x), origin = "1899-12-30")
+}
 
-commission_check
-
-colSums(
-  is.na(
-    insurance_clean %>%
-      select(
-        CommissionType,
-        InitialCommissionRate_GST,
-        RenewalCommissionRate_GST
-      )
-  )
-)
-
-
-
-# 11. TRAIN / TEST SPLIT and MISSING VALUE IMPUTATION
-
-library(tidymodels)
-
-set.seed(3501)
-
-# Create a separate modelling dataset.
-# NEOS_Flag is created only for classification modelling.
-model_data <- insurance_clean %>%
+data_clean <- data_clean %>%
   mutate(
-    NEOS_Flag = factor(
-      if_else(Underwriter == "NEOS Life", "NEOS", "Other"),
-      levels = c("Other", "NEOS")
+    date = fix_excel_date(date),
+    year = year(date),
+    month = month(date, label = TRUE),
+    quarter = quarter(date),
+    weekday = wday(date, label = TRUE),
+    age_band = case_when(
+      age_next < 30 ~ "Under 30",
+      age_next < 40 ~ "30-39",
+      age_next < 50 ~ "40-49",
+      age_next < 60 ~ "50-59",
+      age_next >= 60 ~ "60+",
+      TRUE ~ NA_character_
     )
+  )
+
+# 11. Collapse high-cardinality categorical variables
+data_clean <- data_clean %>%
+  mutate(
+    occupation_group = fct_lump_n(as.factor(occupation), n = 30, other_level = "Other"),
+    package_group = fct_lump_n(as.factor(package), n = 30, other_level = "Other"),
+    adviser_group = fct_lump_n(as.factor(adviser_id), n = 50, other_level = "Other")
+  )
+
+# 12. Convert categorical fields to factors
+data_clean <- data_clean %>%
+  mutate(
+    across(
+      c(
+        neos_flag, underwriter, package, package_group,
+        super, rollover_tax_rebate, gender, smoker_status,
+        home_state, occupation, occupation_group, self_employed,
+        premium_frequency, product_bundle, commission_type,
+        initial_commission_rate_gst, renewal_commission_rate_gst,
+        age_band, month, weekday, adviser_group
+      ),
+      as.factor
+    )
+  )
+```
+
+# Missing Values
+
+```{r missing-values}
+missing_table <- data_clean %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Missing_Count"
   ) %>%
-  select(
-    NEOS_Flag,
-    everything(),
-    -Underwriter
-  )
-
-# Choose variables for this model.
-# Date, Time and raw CommissionStructure are removed here because they are not
-# suitable for KNN / Naive Bayes directly. The organised commission columns stay.
-model_data <- model_data %>%
-  select(
-    -Date,
-    -Time,
-    -CommissionStructure
-  )
-
-# Split before imputation to avoid data leakage.
-data_split <- initial_split(
-  model_data,
-  prop = 0.80,
-  strata = NEOS_Flag
-)
-
-train_data <- training(data_split)
-test_data <- testing(data_split)
-
-# AnnualIncome showed patterned missingness, so as the other customer indicators, so add a missingness indicator before median imputation. 
-
-# Missing indicators for customer variables
-
-library(recipes)
-
-customer_vars <- c(
-  "AnnualIncome",
-  "AgeNext",
-  "Gender",
-  "Occupation",
-  "SmokerStatus",
-  "HomeState",
-  "SelfEmployed"
-)
-
-imputation_recipe <- recipe(NEOS_Flag ~ ., data = train_data) %>%
-  step_indicate_na(all_of(customer_vars)) %>%
-  step_string2factor(all_nominal_predictors()) %>%
-  step_novel(all_nominal_predictors()) %>%
-  step_impute_median(all_numeric_predictors()) %>%
-  step_impute_mode(all_nominal_predictors()) %>%
-  step_zv(all_predictors())
-
-imputation_prep <- prep(
-  imputation_recipe,
-  training = train_data
-)
-
-train_data <- bake(
-  imputation_prep,
-  new_data = train_data
-)
-
-test_data <- bake(
-  imputation_prep,
-  new_data = test_data
-)
-
-# Check train/test size and class balance.
-sum(is.na(train_data))
-sum(is.na(test_data))
-
-colSums(is.na(train_data))
-colSums(is.na(test_data))
-
-train_data %>%
-  count(NEOS_Flag) %>%
   mutate(
-    Percentage = round(n / sum(n) * 100, 2)
+    Missing_Percent = round(Missing_Count / nrow(data_clean) * 100, 4)
+  ) %>%
+  arrange(desc(Missing_Count), Variable)
+
+kable(missing_table)
+```
+
+# Final Modelling Data
+
+```{r model-data}
+model_data <- data_clean %>%
+  drop_na(
+    annual_income,
+    commission_structure,
+    adviser_id
+  ) %>%
+  mutate(
+    log_annual_income = log1p(annual_income)
   )
 
-test_data %>%
-  count(NEOS_Flag) %>%
+# KNN selected data: reduce duplicated / highly related variables
+knn_data_final <- model_data %>%
+  dplyr::select(
+    neos_flag,
+    
+    # Demographics
+    age_next, gender, smoker_status, home_state,
+    occupation_group, self_employed,
+    log_annual_income,
+    
+    # Policy / product information
+    super, rollover_tax_rebate,
+    life_bin, tpd_bin, trauma_bin, ip_bin,
+    log_annualised_premium,
+    log_total_cover,
+    premium_frequency,
+    
+    # Commission information
+    commission_type,
+    initial_commission_rate_gst,
+    renewal_commission_rate_gst,
+    
+    # Other useful predictors
+    has_alternative,
+    adviser_group,
+    month, weekday
+  ) %>%
+  drop_na() %>%
   mutate(
-    Percentage = round(n / sum(n) * 100, 2)
+    neos_flag = factor(neos_flag, levels = c("Yes", "No"))
   )
+
+class_balance <- model_data_final %>%
+  count(neos_flag) %>%
+  mutate(percent = n / sum(n))
+
+kable(class_balance)
+```
