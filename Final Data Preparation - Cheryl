@@ -395,3 +395,26 @@ class_balance <- model_data_final %>%
 
 kable(class_balance, caption = "Final modelling data class balance")
 ```
+
+# Train-Test Split
+
+```{r split-data}
+train_index <- createDataPartition(model_data_final$neos_flag, p = 0.70, list = FALSE)
+
+train_data <- model_data_final[train_index, ]
+test_data <- model_data_final[-train_index, ]
+
+split_summary <- tibble(
+  Dataset = c("Training", "Testing"),
+  Rows = c(
+    nrow(train_data),
+    nrow(test_data)
+  ),
+  NEOS_Yes_Rate = c(
+    mean(train_data$neos_flag == "Yes"),
+    mean(test_data$neos_flag == "Yes")
+  )
+)
+
+kable(split_summary)
+```
