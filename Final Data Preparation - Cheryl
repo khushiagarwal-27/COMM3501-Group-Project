@@ -350,17 +350,20 @@ kable(missing_table)
 
 ```{r model-data}
 model_data <- data_clean %>%
+  dplyr::select(-alternative) %>%
   drop_na(
     annual_income,
     commission_structure,
     adviser_id
   ) %>%
   mutate(
-    log_annual_income = log1p(annual_income)
+    log_annual_income = log1p(annual_income),
+    has_alternative = factor(has_alternative, levels = c(0, 1))
   )
 
-# KNN selected data: reduce duplicated / highly related variables
-knn_data_final <- model_data %>%
+# Final selected data for KNN and Navie, (Change based on your model)
+
+model_data_final <- model_data %>%
   dplyr::select(
     neos_flag,
     
@@ -377,9 +380,7 @@ knn_data_final <- model_data %>%
     premium_frequency,
     
     # Commission information
-    commission_type,
-    initial_commission_rate_gst,
-    renewal_commission_rate_gst,
+    commission_type, initial_commission_rate_gst, renewal_commission_rate_gst,
     
     # Other useful predictors
     has_alternative,
@@ -387,13 +388,11 @@ knn_data_final <- model_data %>%
     month, weekday
   ) %>%
   drop_na() %>%
-  mutate(
-    neos_flag = factor(neos_flag, levels = c("Yes", "No"))
-  )
+  mutate(neos_flag = factor(neos_flag, levels = c("Yes", "No")))
 
 class_balance <- model_data_final %>%
   count(neos_flag) %>%
   mutate(percent = n / sum(n))
 
-kable(class_balance)
+kable(class_balance, caption = "Final modelling data class balance")
 ```
