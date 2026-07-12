@@ -383,8 +383,7 @@ model_data_final <- model_data %>%
     commission_type, initial_commission_rate_gst, renewal_commission_rate_gst,
     
     # Other useful predictors
-    has_alternative,
-    adviser_group
+    has_alternative
   ) %>%
   drop_na() %>%
   mutate(neos_flag = factor(neos_flag, levels = c("Yes", "No")))
