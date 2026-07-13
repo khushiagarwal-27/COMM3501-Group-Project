@@ -1,0 +1,322 @@
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(lubridate)
+library(scales)
+library(knitr)
+library(patchwork)
+
+blue_navy   <- "#08306B"
+blue_dark   <- "#2171B5"
+blue_mid    <- "#4292C6"
+blue_soft   <- "#6BAED6"
+blue_pale   <- "#9ECAE1"
+blue_light  <- "#C6DBEF"
+
+blue_ramp <- colorRampPalette(c(blue_light, blue_navy))
+
+theme_neos <- theme_minimal(base_size = 13) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(color = "grey30", size = 11),
+    plot.caption  = element_text(color = "grey50", size = 9, hjust = 0),
+    panel.grid.minor = element_blank(),
+    legend.position  = "bottom"
+  )
+theme_set(theme_neos)
+
+data_path <- "A3_Dataset_2023.xlsx"
+data_raw  <- read_excel(data_path)
+
+cat("Rows:", nrow(data_raw), " | Columns:", ncol(data_raw))
+
+data <- data_raw %>%
+  clean_names() %>%
+  mutate(
+    across(where(is.character), ~ str_squish(.)),
+    across(where(is.character), ~ na_if(., "")),
+    across(where(is.character), ~ na_if(., "[Blank]"))
+  )
+
+overview_tbl <- tibble(
+  Column      = names(data),
+  Type        = map_chr(data, ~ class(.x)[1]),
+  Missing_pct = map_dbl(data, ~ round(mean(is.na(.x)) * 100, 2))
+) %>% arrange(desc(Missing_pct))
+
+kable(head(overview_tbl, 10), caption = "Table 1. Columns with the most missing values, after clean_names()")
+
+n_income_negative <- sum(data$annual_income < 0, na.rm = TRUE)
+
+product_flags <- c("life", "tpd", "trauma", "ip", "be", "severity")
+
+consistency_tbl <- map_dfr(product_flags, function(p) {
+  amt_col <- paste0(p, "_cover_amount")
+  tibble(
+    Product = p,
+    `Recommended='Yes' but cover = $0` = sum(data[[p]] == "Yes" & data[[amt_col]] == 0, na.rm = TRUE),
+    `Recommended='No' but cover > $0`  = sum(data[[p]] == "No"  & data[[amt_col]] > 0,  na.rm = TRUE)
+  )
+})
+
+kable(consistency_tbl, caption = "Table 2. Consistency check: does the Yes/No flag agree with the cover amount?")
+
+data_clean <- data %>%
+  dplyr::select(-recommendation_id, -request_id, -life_id, -external_ref) %>%
+  mutate(
+    neos_flag = factor(if_else(underwriter == "NEOS Life", "Yes", "No"), levels = c("No", "Yes")),
+    is_neos   = as.integer(neos_flag == "Yes"),
+
+    life_bin   = case_when(life   == "Yes" ~ 1, life   == "No" ~ 0, TRUE ~ NA_real_),
+    tpd_bin    = case_when(tpd    == "Yes" ~ 1, tpd    == "No" ~ 0, TRUE ~ NA_real_),
+    trauma_bin = case_when(trauma == "Yes" ~ 1, trauma == "No" ~ 0, TRUE ~ NA_real_),
+    ip_bin     = case_when(ip     == "Yes" ~ 1, ip     == "No" ~ 0, TRUE ~ NA_real_),
+
+    annual_income = if_else(annual_income < 0, NA_real_, annual_income),
+    has_alternative = if_else(is.na(alternative), 0L, 1L)
+  )
+
+n_before_product_filter <- nrow(data_clean)
+
+data_clean <- data_clean %>%
+  mutate(product_count = life_bin + tpd_bin + trauma_bin + ip_bin) %>%
+  filter(product_count > 0)
+
+n_dropped_zero_product <- n_before_product_filter - nrow(data_clean)
+
+data_clean <- data_clean %>%
+  mutate(
+    product_bundle = case_when(
+      life_bin == 1 & tpd_bin == 0 & trauma_bin == 0 & ip_bin == 0 ~ "Life only",
+      life_bin == 0 & tpd_bin == 1 & trauma_bin == 0 & ip_bin == 0 ~ "TPD only",
+      life_bin == 0 & tpd_bin == 0 & trauma_bin == 1 & ip_bin == 0 ~ "Trauma only",
+      life_bin == 0 & tpd_bin == 0 & trauma_bin == 0 & ip_bin == 1 ~ "IP only",
+      life_bin == 1 & tpd_bin == 1 & trauma_bin == 0 & ip_bin == 0 ~ "Life + TPD",
+      life_bin == 1 & tpd_bin == 1 & trauma_bin == 1 & ip_bin == 0 ~ "Life + TPD + Trauma",
+      life_bin == 1 & tpd_bin == 1 & trauma_bin == 1 & ip_bin == 1 ~ "Life + TPD + Trauma + IP",
+      product_count >= 2 ~ "Other bundle",
+      TRUE ~ "Other"
+    )
+  )
+
+commission_slash <- str_match(
+  data_clean$commission_structure,
+  "(\\d+(?:\\.\\d+)?)\\s*%?\\s*/\\s*(\\d+(?:\\.\\d+)?)\\s*%?"
+)
+commission_percent <- str_match(
+  data_clean$commission_structure,
+  "(\\d+(?:\\.\\d+)?)\\s*%.*?(\\d+(?:\\.\\d+)?)\\s*%"
+)
+
+data_clean <- data_clean %>%
+  mutate(
+    commission_type = case_when(
+      is.na(commission_structure) ~ NA_character_,
+      str_detect(str_to_lower(commission_structure), "nil")     ~ "Nil",
+      str_detect(str_to_lower(commission_structure), "upfront") ~ "Upfront",
+      str_detect(str_to_lower(commission_structure), "hybrid|h2ybrid|h3ybrid|h4ybrid") ~ "Hybrid",
+      str_detect(str_to_lower(commission_structure), "level|l2evel")                   ~ "Level",
+      TRUE ~ "Other"
+    ),
+    upfront_commission = coalesce(
+      as.numeric(commission_slash[, 2]),
+      as.numeric(commission_percent[, 2])
+    ),
+    renewal_commission = coalesce(
+      as.numeric(commission_slash[, 3]),
+      as.numeric(commission_percent[, 3])
+    )
+  )
+
+rate_coverage <- percent(mean(!is.na(data_clean$upfront_commission)), accuracy = 0.1)
+
+df_clean <- data_clean
+overall_neos_share <- mean(df_clean$is_neos)
+
+top_underwriters <- df_clean %>%
+  count(underwriter, sort = TRUE) %>%
+  mutate(rank = row_number(),
+         underwriter_grp = if_else(rank <= 8, underwriter, "Other")) %>%
+  group_by(underwriter_grp) %>%
+  summarise(n = sum(n), .groups = "drop") %>%
+  mutate(share     = n / sum(n),
+         is_neos_u = underwriter_grp == "NEOS Life",
+         label     = paste0(percent(share, accuracy = 0.1), "  (n=", comma(n), ")"))
+
+print(ggplot(top_underwriters, aes(x = reorder(underwriter_grp, share), y = share,
+                              fill = is_neos_u)) +
+  geom_col(width = 0.72) +
+  geom_text(aes(label = label), hjust = -0.05, size = 3.4, color = "grey20") +
+  coord_flip() +
+  scale_y_continuous(labels = percent, expand = expansion(mult = c(0, 0.28))) +
+  scale_fill_manual(values = c("TRUE" = blue_navy, "FALSE" = blue_light), guide = "none") +
+  labs(
+    title    = "NEOS is already a top-3 underwriter, but trails the market leader",
+    subtitle = "Share of recommendations by underwriter (top 8 + Other), n = sample size behind each bar",
+    x = NULL, y = "Share of recommendations",
+    caption  = "Why it matters: this is the competitive backdrop for the whole project — every\nother chart explains what separates NEOS's share from the market leader's."
+  )
+)
+
+top9 <- df_clean %>% count(underwriter, sort = TRUE) %>% slice_head(n = 9) %>% pull(underwriter)
+
+commission_mix <- df_clean %>%
+  filter(underwriter %in% top9, !is.na(commission_type)) %>%
+  count(underwriter, commission_type) %>%
+  group_by(underwriter) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup()
+
+underwriter_share <- df_clean %>%
+  count(underwriter) %>%
+  mutate(share = n / sum(n)) %>%
+  filter(underwriter %in% top9)
+
+underwriter_order <- underwriter_share %>% arrange(desc(share)) %>% pull(underwriter)
+
+commission_mix <- commission_mix %>%
+  mutate(underwriter = factor(underwriter, levels = rev(underwriter_order)))
+
+share_labels <- underwriter_share %>%
+  mutate(underwriter = factor(underwriter, levels = rev(underwriter_order)),
+         label = paste0(percent(share, accuracy = 0.1), " of market"))
+
+type_colors <- c("Upfront" = blue_navy, "Hybrid" = blue_dark, "Level" = blue_mid,
+                  "Nil" = blue_pale, "Other" = blue_light)
+
+print(ggplot(commission_mix, aes(x = underwriter, y = pct, fill = commission_type)) +
+  geom_col(width = 0.68) +
+  geom_text(data = share_labels, aes(x = underwriter, y = 1.03, label = label),
+            inherit.aes = FALSE, hjust = 0, size = 3.1, color = "grey25", fontface = "bold") +
+  coord_flip(clip = "off") +
+  scale_y_continuous(labels = percent, limits = c(0, 1.32),
+                      breaks = seq(0, 1, 0.25), expand = c(0, 0)) +
+  scale_fill_manual(values = type_colors, name = "Commission type") +
+  labs(
+    title    = "Each underwriter runs almost one commission model, not a mix",
+    subtitle = "Commission-type composition per underwriter (bars), with each underwriter's overall\nmarket share labelled on the right — ordered top-to-bottom by market share",
+    x = NULL, y = "Share of that underwriter's recommendations",
+    caption  = paste0(
+      "Every top-9 underwriter is 90%+ one commission type: NEOS and AIA Australia are ~96%\n",
+      "Upfront; TAL, Zurich, MetLife, MLC and OnePath are ~92-97% Hybrid (OnePath's records use\n",
+      "disguised spellings like 'h4ybrid'/'l2evel', matched explicitly so they aren't dumped into\n",
+      "'Other'). Why it matters: commission_type is effectively an underwriter fingerprint, not\n",
+      "something that varies within an underwriter's book — so on its own it mostly predicts\n",
+      "*which insurer*, not *whether an adviser recommends at all*. It's still useful in a model,\n",
+      "but should be interpreted as an underwriter identifier, not a lever NEOS can pull without\n",
+      "changing insurer. Within the Hybrid group, TAL (",
+      percent(underwriter_share$share[underwriter_share$underwriter == "TAL"], accuracy = 0.1),
+      ") far outperforms Zurich/MetLife/MLC/OnePath on the *same* structure — so factors beyond\n",
+      "commission type clearly separate winners from laggards even inside one commission model."
+    )
+  )
+)
+
+core_products <- c("life", "tpd", "trauma", "ip")
+
+product_summary <- map_dfr(core_products, function(p) {
+  df_clean %>%
+    filter(.data[[p]] == "Yes") %>%
+    summarise(win_rate = mean(is_neos), n = n(), .groups = "drop") %>%
+    mutate(Product = str_to_upper(p))
+})
+
+panel_a <- ggplot(product_summary, aes(x = reorder(Product, -n), y = n, fill = win_rate)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  geom_text(aes(label = comma(n)), vjust = 1.6, size = 3.1, color = "white", fontface = "bold") +
+  geom_text(aes(label = paste0("NEOS: ", percent(win_rate, accuracy = 0.1))),
+            vjust = -0.6, size = 3.3, color = "grey15", fontface = "bold") +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.18))) +
+  scale_fill_gradientn(colors = blue_ramp(6)) +
+  labs(title = "A. Product popularity & NEOS win rate", x = NULL, y = "Number of recommendations")
+
+bundle_summary <- df_clean %>%
+  filter(product_bundle != "Other") %>%
+  group_by(product_bundle) %>%
+  summarise(win_rate = mean(is_neos), n = n(), .groups = "drop") %>%
+  mutate(label = paste0(percent(win_rate, accuracy = 0.1), "  (n=", comma(n), ")"))
+
+panel_b <- ggplot(bundle_summary, aes(x = reorder(product_bundle, win_rate), y = win_rate, fill = win_rate)) +
+  geom_col(width = 0.65, show.legend = FALSE) +
+  geom_text(aes(label = label), hjust = -0.05, size = 3.1, color = "grey15") +
+  geom_hline(yintercept = overall_neos_share, linetype = "dashed", color = "grey40") +
+  coord_flip() +
+  scale_y_continuous(labels = percent, expand = expansion(mult = c(0, 0.32))) +
+  scale_fill_gradientn(colors = blue_ramp(6)) +
+  labs(title = "B. NEOS win rate by specific product bundle", x = NULL, y = "NEOS recommendation rate")
+
+print((panel_a | panel_b) +
+  plot_annotation(
+    title    = "Product Mix Matters: NEOS Performs Best on Protection Riders and Full Bundles",
+    subtitle = "A: how often each core product is recommended, and NEOS's win rate on it   |   B: NEOS win rate for each specific product combination",
+    caption  = paste0(
+      "A: Life is the most-recommended product (", comma(product_summary$n[product_summary$Product=="LIFE"]),
+      " recs) but NEOS's win rate is actually highest on Trauma and IP (~15-16%) and lowest on Life/TPD (~13%).\n",
+      "B: the full 'Life + TPD + Trauma + IP' bundle is NEOS's strongest combination (~20%), while 'Life only' is its\n",
+      "weakest (~5%) — more products is not automatically better ('Life + TPD' alone underperforms 'Life + TPD +\n",
+      "Trauma'). Why it matters: this points to a concrete lever — encourage advisers toward Trauma/IP-inclusive,\n",
+      "full bundles rather than assuming bundle size alone drives the effect."
+    ),
+    theme = theme(
+      plot.title    = element_text(face = "bold", size = 15),
+      plot.subtitle = element_text(color = "grey30", size = 10.5),
+      plot.caption  = element_text(color = "grey50", size = 8.5, hjust = 0)
+    )
+  )
+)
+
+seg_state  <- df_clean %>% filter(!is.na(home_state))    %>% group_by(value = home_state)    %>% summarise(win_rate = mean(is_neos), n = n(), .groups = "drop") %>% mutate(segment = "State")
+seg_self   <- df_clean %>% filter(!is.na(self_employed)) %>% group_by(value = self_employed)  %>% summarise(win_rate = mean(is_neos), n = n(), .groups = "drop") %>% mutate(segment = "Self-Employed")
+seg_super  <- df_clean %>% filter(!is.na(super))         %>% group_by(value = super)          %>% summarise(win_rate = mean(is_neos), n = n(), .groups = "drop") %>% mutate(segment = "Super-Linked")
+seg_gender <- df_clean %>% filter(!is.na(gender))        %>% group_by(value = gender)         %>% summarise(win_rate = mean(is_neos), n = n(), .groups = "drop") %>% mutate(segment = "Gender")
+
+segments_all <- bind_rows(seg_gender, seg_self, seg_state, seg_super) %>%
+  mutate(
+    segment = factor(segment, levels = c("Gender", "Self-Employed", "State", "Super-Linked")),
+    value   = as.character(value)
+  )
+
+min_segment_n <- min(segments_all$n)
+
+seg_colors <- c(
+  "Gender"         = "#12294D",
+  "Self-Employed"  = "#3F9C8C",
+  "State"          = "#6B3FA0",
+  "Super-Linked"   = "#9DA1A6"
+)
+
+avg_label <- tibble(
+  segment  = factor("Super-Linked", levels = levels(segments_all$segment)),
+  value    = "Yes",
+  win_rate = overall_neos_share,
+  label    = paste0("Overall\naverage\n", percent(overall_neos_share, accuracy = 0.1))
+)
+
+print(ggplot(segments_all, aes(x = value, y = win_rate, fill = segment)) +
+  geom_col(width = 0.65, show.legend = FALSE) +
+  geom_text(aes(label = percent(win_rate, accuracy = 0.1)),
+            vjust = -0.6, fontface = "bold", size = 3.6, color = "grey15") +
+  geom_hline(yintercept = overall_neos_share, linetype = "dashed", color = "grey40") +
+  geom_text(data = avg_label, aes(label = label), inherit.aes = TRUE,
+            hjust = -0.15, vjust = 0.5, size = 2.9, color = "grey35", lineheight = 0.9) +
+  facet_wrap(~segment, scales = "free_x", nrow = 1) +
+  scale_y_continuous(labels = percent, limits = c(0, 0.25),
+                      breaks = seq(0, 0.25, 0.05), expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = seg_colors) +
+  labs(
+    title    = "NEOS Recommendation Rates Differ Across Key Customer Segments",
+    subtitle = paste0("Recommendation rate by gender, self-employment status, state and super linkage\n",
+                       "(dashed line = overall NEOS average)"),
+    x = NULL, y = "NEOS recommendation rate",
+    caption  = paste0("Every bar is backed by at least ", comma(min_segment_n),
+                       " records — none of these gaps are a small-sample artifact.\n",
+                       "Why it matters: State, Super, SelfEmployed and Gender are all cheap, always-available\n",
+                       "fields — good candidate features for every classification model.")
+  ) +
+  theme(
+    strip.background = element_rect(fill = "grey92", color = NA),
+    strip.text        = element_text(face = "bold", size = 11, color = "grey15"),
+    panel.spacing     = unit(1, "lines"),
+    axis.text.x       = element_text(size = 9)
+  )
+)
